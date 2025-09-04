@@ -1,0 +1,133 @@
+name: CAP CI/CD to Cloud Foundry
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    env:
+      MTAR_NAME: ${{ github.event.repository.name }}-${{ github.sha }}.mtar
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies (npm ci)
+        shell: bash
+        run: |
+          set -e
+          npm ci
+
+      - name: Validate CDS models (compile srv to CSN)
+        shell: bash
+        run: |
+          set -e
+          if [ -d "srv" ]; then
+            npx cds compile srv --to csn
+          else
+            echo "No srv directory detected; skipping CDS compile validation."
+          fi
+
+      - name: Run tests (if present)
+        shell: bash
+        run: |
+          set -e
+          npm run -s test --if-present
+
+      - name: Build project (CDS build)
+        shell: bash
+        run: |
+          set -e
+          npm run build --if-present || npx cds build
+
+      - name: Build MTAR (Cloud MTA Build Tool)
+        shell: bash
+        run: |
+          set -e
+          if [ ! -f "mta.yaml" ]; then
+            echo "mta.yaml not found; generating with cds add mta..."
+            npx -y @sap/cds-dk add mta
+          fi
+          npm i -g mbt
+          mbt build -p=cf -t mta_archives
+          MTAR_FILE="$(ls -t mta_archives/*.mtar | head -n 1)"
+          echo "Built MTAR: ${MTAR_FILE}"
+          cp "${MTAR_FILE}" "${MTAR_NAME}"
+          ls -l "${MTAR_NAME}"
+
+      - name: Upload MTAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtar-${{ github.sha }}
+          path: ${{ env.MTAR_NAME }}
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Cloud Foundry
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    env:
+      CF_API: ${{ secrets.CF_API }}
+      CF_ORG: ${{ secrets.CF_ORG }}
+      CF_SPACE: ${{ secrets.CF_SPACE }}
+      CF_USERNAME: ${{ secrets.CF_USERNAME }}
+      CF_PASSWORD: ${{ secrets.CF_PASSWORD }}
+    steps:
+      - name: Download MTAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mtar-${{ github.sha }}
+          path: mtar
+
+      - name: Install Cloud Foundry CLI and MultiApps plugin
+        shell: bash
+        run: |
+          set -e
+          curl -L -o cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&source=github"
+          tar -xzf cf.tgz
+          sudo mv cf /usr/local/bin/cf
+          cf version
+          # Install MultiApps plugin
+          MTA_PLUGIN_URL="https://github.com/cloudfoundry/multiapps-cli-plugin/releases/download/v2.8.1/multiapps-cli-plugin-linux-amd64-v2.8.1"
+          cf install-plugin -f "${MTA_PLUGIN_URL}"
+          cf plugins
+
+      - name: Cloud Foundry Login
+        shell: bash
+        run: |
+          set -e
+          if [ -z "${CF_API}" ] || [ -z "${CF_ORG}" ] || [ -z "${CF_SPACE}" ] || [ -z "${CF_USERNAME}" ] || [ -z "${CF_PASSWORD}" ]; then
+            echo "Missing one or more required CF secrets (CF_API, CF_ORG, CF_SPACE, CF_USERNAME, CF_PASSWORD)."
+            exit 1
+          fi
+          cf api "${CF_API}"
+          cf auth "${CF_USERNAME}" "${CF_PASSWORD}"
+          cf target -o "${CF_ORG}" -s "${CF_SPACE}"
+
+      - name: Deploy MTAR to Cloud Foundry
+        shell: bash
+        run: |
+          set -e
+          MTAR_FILE="$(ls -t mtar/*.mtar | head -n 1)"
+          echo "Deploying MTAR: ${MTAR_FILE}"
+          cf deploy "${MTAR_FILE}" -f
+
+      - name: Logout from Cloud Foundry
+        if: always()
+        shell: bash
+        run: |
+          set -e
+          cf logout || true
