@@ -1,49 +1,24 @@
-# My CAP Application
+# Automated System Tests for CAP-Based Projects
 
-This is a simple SAP Cloud Application Programming (CAP) application designed to demonstrate the capabilities of the framework.
+[![REUSE status](https://api.reuse.software/badge/github.com/SAP-samples/cap-bookshop-wdi5)](https://api.reuse.software/info/github.com/SAP-samples/cap-bookshop-wdi5)
 
-## Project Structure
+## Description
+This repository contains a sample SAP Fiori application based on SAP Cloud Application Programming Model (CAP). It is used in the following SAP tutorial for developers.
 
-- **app/index.html**: Main HTML entry point for the application.
-- **db/data-model.cds**: Defines the data model using Core Data Services (CDS).
-- **db/csv/sample-data.csv**: Contains sample data for testing and development.
-- **srv/cat-service.cds**: Defines the service layer and endpoints.
-- **srv/cat-service.js**: Implements business logic for the service.
-- **package.json**: Configuration file for npm dependencies and scripts.
-- **.cdsrc.json**: Configuration settings for the Continuous Delivery pipeline.
-- **mta.yaml**: Defines the Multi-Target Application structure for deployment.
+https://developers.sap.com/tutorials/cicd-wdi5-cap.html
 
-## Setup Instructions
+## Requirements & Installation
 
-1. Clone the repository:
-   ```
-   git clone <repository-url>
-   cd my-cap-app
-   ```
+Refer to the prerequisites in the SAP tutorial above.
 
-2. Install dependencies:
-   ```
-   npm install
-   ```
+## Known Issues
 
-3. Build the application:
-   ```
-   npm run build
-   ```
+No known issues.
 
-4. Run the application locally:
-   ```
-   npm start
-   ```
-
-## Usage
-
-Access the application by navigating to `http://localhost:4004` in your web browser.
-
-## CI/CD Pipeline
-
-This project includes a configuration for Continuous Integration and Continuous Delivery. Ensure that you have the necessary tools and access to deploy to Cloud Foundry.
+## How to obtain support
+[Create an issue](https://github.com/SAP-samples/cap-bookshop-wdi5/issues) in this repository if you find a bug or have questions about the content.
+Detailed documentation, roadmap and support channels for wdi5-related topics can be found in the [wdi5 repository](https://github.com/ui5-community/wdi5) of the UI5-community.
+For additional support, [ask a question in SAP Community](https://answers.sap.com/questions/ask.html).
 
 ## License
-
-This project is licensed under the MIT License.
+Copyright (c) 2022 SAP SE or an SAP affiliate company. All rights reserved. This project is licensed under the Apache Software License, version 2.0 except as noted otherwise in the [LICENSE](LICENSE) file.

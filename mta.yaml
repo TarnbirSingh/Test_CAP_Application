@@ -1,34 +1,45 @@
-ID: my-cap-app
-_schema-version: 3.1.0
-version: 0.0.1
-
+_schema-version: '3.1'
+ID: capire.bookshop
+version: 1.0.0
+description: "A simple self-contained bookshop service."
+parameters:
+  enable-parallel-deployments: true
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npx -p @sap/cds-dk cds build --production
+        # include the app in the deployment artifact
+        - cp -r app gen/srv/
+        # include the.cds for re-use in app
+        - cp srv/admin-service.cds gen/srv/srv/
+        - mkdir -p gen/srv/db
+        # includes initial data for the app
+        - cp -r db/data gen/srv/db/
+        - cp db/schema.cds gen/srv/db/
+        - rm gen/srv/srv/csn.json
 modules:
-  - name: my-cap-app-db
-    type: hdb
-    path: db
-    provides:
-      - name: my-cap-app-db-binding
-        properties:
-          database: my-cap-app-db
-
-  - name: my-cap-app-srv
+  - name: bookshop-srv
     type: nodejs
-    path: srv
+    path: gen/srv
+    parameters:
+      buildpack: nodejs_buildpack
+    build-parameters:
+      builder: npm-ci
     provides:
-      - name: my-cap-app-srv-binding
+      - name: srv-api # required by consumers of CAP services (e.g. approuter)
         properties:
           srv-url: ${default-url}
     requires:
-      - name: my-cap-app-hdi-container
-
-  - name: my-cap-app-ui
-    type: html5
-    path: app
-    requires:
-      - name: my-cap-app-srv-binding
+      - name: bookshop-auth
 
 resources:
-  - name: my-cap-app-hdi-container
-    type: com.sap.xs.hdi-container
-    properties:
-      hdi-service-name: ${service-name}
+  - name: bookshop-auth
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+      config:
+        xsappname: bookshop-${org}-${space}
+        tenant-mode: dedicated
