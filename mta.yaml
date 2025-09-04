@@ -1,0 +1,27 @@
+ID: my-cap-app
+_schema-version: 3.1.0
+version: 0.0.1
+modules:
+  - name: my-cap-app-db
+    type: hdb
+    path: db
+    provides:
+      - name: my_cap_app_db
+        properties:
+          database: my_cap_app_db
+  - name: my-cap-app-srv
+    type: nodejs
+    path: srv
+    requires:
+      - name: my_cap_app_db
+  - name: my-cap-app-ui
+    type: html5
+    path: app
+    requires:
+      - name: my_cap_app_srv
+resources:
+  - name: my_cap_app_db
+    type: hdb
+    properties:
+      service: my_cap_app_db
+      plan: hdi-shared
