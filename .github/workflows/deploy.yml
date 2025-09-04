@@ -1,0 +1,129 @@
+name: CAP CI/CD to Cloud Foundry
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    outputs:
+      mtar_name: ${{ steps.compute_mtar.outputs.mtar_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Compute MTAR name
+        id: compute_mtar
+        run: |
+          set -e
+          MTAR_NAME="${GITHUB_REPOSITORY//\//-}-${GITHUB_SHA}.mtar"
+          echo "MTAR_NAME=$MTAR_NAME" >> "$GITHUB_ENV"
+          echo "mtar_name=$MTAR_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies (npm ci)
+        run: |
+          set -e
+          npm ci
+
+      - name: Validate CDS models (npx cds compile)
+        run: |
+          set -e
+          npx cds compile srv --to csn
+
+      - name: Run tests (if present)
+        run: |
+          set -e
+          if node -e "process.exit((require('./package.json').scripts||{}).test?0:1)"; then
+            npm test
+          else
+            echo "No test script defined in package.json, skipping."
+          fi
+
+      - name: Build project (npm run build)
+        run: |
+          set -e
+          npm run build
+
+      - name: Install Cloud MTA Build Tool (mbt)
+        run: |
+          set -e
+          npm install -g mbt
+
+      - name: Build MTAR
+        run: |
+          set -e
+          rm -rf mta_archives
+          mbt build -p cf -t mta_archives --mtar "$MTAR_NAME"
+          test -f "mta_archives/$MTAR_NAME"
+
+      - name: Upload MTAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtar
+          path: mta_archives/${{ env.MTAR_NAME }}
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Cloud Foundry
+    needs: build-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download MTAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mtar
+          path: mta_archives
+
+      - name: Install Cloud Foundry CLI (v8)
+        run: |
+          set -e
+          wget -q -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=v8&source=github"
+          tar -xzf cf.tgz
+          sudo mv cf /usr/local/bin/cf
+          cf version
+
+      - name: Install CF multiapps plugin
+        run: |
+          set -e
+          cf add-plugin-repo CF-Community https://plugins.cloudfoundry.org || true
+          cf install-plugin -f -r CF-Community "multiapps"
+          cf plugins
+
+      - name: CF Login
+        env:
+          CF_API: ${{ secrets.CF_API }}
+          CF_ORG: ${{ secrets.CF_ORG }}
+          CF_SPACE: ${{ secrets.CF_SPACE }}
+          CF_USERNAME: ${{ secrets.CF_USERNAME }}
+          CF_PASSWORD: ${{ secrets.CF_PASSWORD }}
+        run: |
+          set -e
+          test -n "$CF_API" && test -n "$CF_ORG" && test -n "$CF_SPACE" && test -n "$CF_USERNAME" && test -n "$CF_PASSWORD"
+          cf api "$CF_API"
+          cf auth "$CF_USERNAME" "$CF_PASSWORD"
+          cf target -o "$CF_ORG" -s "$CF_SPACE"
+
+      - name: Deploy MTAR to Cloud Foundry
+        env:
+          MTAR_NAME: ${{ needs.build-test.outputs.mtar_name }}
+        run: |
+          set -e
+          test -f "mta_archives/$MTAR_NAME"
+          cf deploy "mta_archives/$MTAR_NAME" -f
