@@ -1,0 +1,101 @@
+name: CI/CD - CAP to Cloud Foundry
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  MTAR_NAME: ${{ github.repository }}-${{ github.sha }}.mtar
+
+jobs:
+  build-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies and run validations
+        shell: bash
+        run: |
+          set -e
+          npm ci
+          npx -y cds --version
+          npx -y cds compile srv --to csn
+          npm run -s test --if-present
+          npm run build
+
+      - name: Build MTAR (only on Node 20.x)
+        if: ${{ matrix.node-version == '20.x' }}
+        shell: bash
+        run: |
+          set -e
+          npx -y mbt build -t mta_archives --mtar "${{ env.MTAR_NAME }}"
+          ls -la mta_archives
+
+      - name: Upload MTAR artifact
+        if: ${{ matrix.node-version == '20.x' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtar
+          path: mta_archives/${{ env.MTAR_NAME }}
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to Cloud Foundry
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    env:
+      CF_API: ${{ secrets.CF_API }}
+      CF_ORG: ${{ secrets.CF_ORG }}
+      CF_SPACE: ${{ secrets.CF_SPACE }}
+      CF_USERNAME: ${{ secrets.CF_USERNAME }}
+      CF_PASSWORD: ${{ secrets.CF_PASSWORD }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download MTAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mtar
+          path: mta_artifacts
+
+      - name: Install Cloud Foundry CLI and MultiApps plugin
+        shell: bash
+        run: |
+          set -e
+          curl -L "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=v7&source=github" -o cf.tgz
+          tar -xzf cf.tgz
+          sudo mv cf /usr/local/bin/cf
+          cf version
+          cf add-plugin-repo CF-Community https://plugins.cloudfoundry.org
+          cf install-plugin -f -r CF-Community "multiapps"
+          cf plugins
+
+      - name: Log in to Cloud Foundry
+        shell: bash
+        run: |
+          set -e
+          cf api "$CF_API"
+          cf auth "$CF_USERNAME" "$CF_PASSWORD"
+          cf target -o "$CF_ORG" -s "$CF_SPACE"
+
+      - name: Deploy MTAR to Cloud Foundry
+        shell: bash
+        run: |
+          set -e
+          cf deploy "mta_artifacts/${{ env.MTAR_NAME }}" -f
