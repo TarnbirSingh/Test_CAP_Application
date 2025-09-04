@@ -1,0 +1,125 @@
+name: CAP CI/CD to Cloud Foundry
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Install dependencies (clean)
+        run: |
+          set -e
+          npm ci
+
+      - name: Validate CDS models (compile to CSN)
+        run: |
+          set -e
+          npx cds compile srv --to csn
+
+      - name: Run unit tests (if present)
+        run: |
+          set -e
+          npm test --if-present
+
+      - name: Build CDS project
+        run: |
+          set -e
+          npm run build --if-present || npx cds build
+
+      - name: Build MTAR
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          REPO_SANITIZED="${GITHUB_REPOSITORY//\//-}"
+          MTAR_FILE="${REPO_SANITIZED}-${GITHUB_SHA}.mtar"
+          mkdir -p mta_archives
+          npx -y -p @sap/cloud-mta-build-tool mbt build -t mta_archives --mtar "${MTAR_FILE}"
+          ls -l mta_archives
+
+      - name: Upload MTAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtar-${{ github.sha }}
+          path: mta_archives/*.mtar
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Cloud Foundry
+    needs: build-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download MTAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mtar-${{ github.sha }}
+          path: mta_archives
+
+      - name: Install Cloud Foundry CLI and multiapps plugin
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
+          wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo gpg --dearmor -o /usr/share/keyrings/cf-cli-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cf-cli-archive-keyring.gpg] https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y cf8-cli
+          cf version
+          cf add-plugin-repo CF-Community https://plugins.cloudfoundry.org
+          cf install-plugin -r CF-Community "multiapps" -f
+          cf plugins
+
+      - name: Cloud Foundry Login
+        env:
+          CF_API: ${{ secrets.CF_API }}
+          CF_ORG: ${{ secrets.CF_ORG }}
+          CF_SPACE: ${{ secrets.CF_SPACE }}
+          CF_USERNAME: ${{ secrets.CF_USERNAME }}
+          CF_PASSWORD: ${{ secrets.CF_PASSWORD }}
+          CF_SKIP_SSL_VALIDATION: ${{ secrets.CF_SKIP_SSL_VALIDATION }}
+        run: |
+          set -e
+          if [ -z "$CF_API" ] || [ -z "$CF_ORG" ] || [ -z "$CF_SPACE" ] || [ -z "$CF_USERNAME" ] || [ -z "$CF_PASSWORD" ]; then
+            echo "Missing required Cloud Foundry secrets. Please set CF_API, CF_ORG, CF_SPACE, CF_USERNAME, CF_PASSWORD."
+            exit 1
+          fi
+          if [ "$CF_SKIP_SSL_VALIDATION" = "true" ] || [ "$CF_SKIP_SSL_VALIDATION" = "1" ]; then
+            cf api "$CF_API" --skip-ssl-validation
+          else
+            cf api "$CF_API"
+          fi
+          cf auth "$CF_USERNAME" "$CF_PASSWORD"
+          cf target -o "$CF_ORG" -s "$CF_SPACE"
+
+      - name: Deploy MTAR
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          REPO_SANITIZED="${GITHUB_REPOSITORY//\//-}"
+          MTAR_FILE="${REPO_SANITIZED}-${GITHUB_SHA}.mtar"
+          MTAR_PATH="mta_archives/${MTAR_FILE}"
+          if [ ! -f "$MTAR_PATH" ]; then
+            echo "Expected MTAR not found at ${MTAR_PATH}. Contents of mta_archives:"
+            ls -la mta_archives || true
+            exit 1
+          fi
+          cf deploy "$MTAR_PATH" -f
